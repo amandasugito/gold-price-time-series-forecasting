@@ -1,0 +1,1436 @@
+---
+title: "Time Series"
+author: "Amanda Sugito & Vanessa Santoso"
+date: "2026-06-06"
+output: word_document
+---
+
+# 1. Preparation
+
+Load Library
+```{r}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(tseries)
+library(car)
+library(Metrics)
+library(xgboost)
+library(nortest)
+library(lmtest)
+```
+
+# 2. Import Data
+```{r}
+data <- read.csv("~/Downloads/datats.csv")
+head(data)
+```
+
+```{r}
+str(data)
+```
+
+```{r}
+dim(data)
+```
+
+# 3. Data Cleaning
+
+### Ubah date menjadi format tanggal
+```{r}
+data$Date <- as.Date(
+  data$Date,
+  format = "%m/%d/%Y"
+)
+```
+
+### Hilangkan koma pada price
+```{r}
+data$Price <- as.numeric(
+  gsub(",", "", data$Price)
+)
+```
+
+### Buat data jadi ascending
+```{r}
+data <- data %>%
+  arrange(Date)
+
+head(data)
+```
+
+### Cek missing value
+```{r}
+colSums(is.na(data))
+```
+
+
+# 4. Exploratory Data Analysis
+```{r}
+summary(data$Price)
+```
+
+### plot harga emas
+```{r}
+ggplot(data,
+       aes(x = Date,
+           y = Price)) +
+  geom_line() +
+  labs(
+    title = "Gold Price Over Time",
+    x = "Date",
+    y = "Price"
+  ) +
+  theme_minimal()
+```
+Dari plot di atas, dapat terlihat bahwa secara visual, dataset ini tidak stasioner dan ada trend naik yang sangat kuat sejak 2024.
+
+
+### Plot distribusi harga
+```{r}
+ggplot(data,
+       aes(Price)) +
+  geom_histogram(
+    bins = 30
+  ) +
+  theme_minimal()
+```
+
+### Conevrt data menjadi time series
+```{r}
+price_ts <- ts(data$Price)
+```
+
+plotting
+```{r}
+plot(price_ts)
+```
+
+```{r}
+class(price_ts)
+frequency(price_ts)
+```
+
+# 5. Train Test Split
+```{r}
+n <- length(price_ts)
+
+train_size <- floor(0.8 * n)
+
+train <- price_ts[1:train_size]
+
+test <- price_ts[(train_size+1):n]
+```
+
+```{r}
+length(train)
+length(test)
+```
+
+```{r}
+split_data <- data.frame(
+  Index = 1:length(price_ts),
+  Price = as.numeric(price_ts),
+  Data = c(
+    rep("Training", length(train)),
+    rep("Testing", length(test))
+  )
+)
+
+ggplot(split_data,
+       aes(x = Index,
+           y = Price,
+           color = Data)) +
+  geom_line(linewidth = 1) +
+  geom_vline(
+    xintercept = length(train),
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Pembagian Data Training dan Testing",
+    x = "Periode",
+    y = "Price"
+  ) +
+  theme_minimal()
+```
+
+
+# 6. Uji stasioneritas
+
+### Uji stasioneritas terhadap varians
+
+H0 : lambda = 1 (stasioner terhadap varians)
+H1 : lambda != 1 (tidak stasioner terhadap varians)
+
+alpha = 0.05
+```{r}
+summary(powerTransform(price_ts))
+```
+karena p-value sebesar < 2.22e-1, maka gagal tolak H0. Artinya, data sudah stasioner terhadap varians.
+
+### Uji stasioneritas terhadap mean
+
+H0 : Data tidak stasioner terhadap mean
+H1 : Data stasioner terhadap mean
+
+alpha = 0.05
+
+```{r}
+adf.test(price_ts)
+```
+Karena p-value = 0.8394 > 0.05, maka gagal tolak H0. Artinya, data tidak stasioner terhadap mean. Kita lakukan differencing pada dataset.
+
+```{r}
+diff_price = diff(price_ts)
+adf.test(diff_price)
+```
+Setelah dilakukan differencing, p-value = 0.01 yang artinya tolak H0. Artinya dataset sudah stasioner terhadap mean. Ini menunjukkan pada model ARIMA nanti, perlu dilakukan differencing satu kali sehingga d = 1.
+
+
+# 7. Model Exponential Smoothing
+```{r}
+ets_model <- ets(train)
+
+summary(ets_model)
+```
+Model Exponential Smoothing menggunakan format ETS(M,N,N) yang artinya
+M (Multiplicative Error) : komponen error bersifat multiplikatif, yaitu besarnya error bergantung pada level data.
+N (No Trend) : model tidak mendeteksi adanya pola trend yang signifikan.
+N (No Seasonality) : model tidak mendeteksi adanya pola musiman pada data.
+
+Nilai alpha = 0.9787 mendekati 1 menunjukkan bahwa model memberikan bobot yang sangat besar pada observasi terbaru dibandingkan observasi yang lebih lama. Artinya, perubahan harga emas terbaru memiliki pengaruh yang sangat kuat terhadap pembentukan nilai prediksi.
+
+Nilai RMSE menunjukkan rata-rata besar kesalahan prediksi model sebesar sekitar 22.96 satuan harga emas.Semakin kecil nilai RMSE, semakin baik kemampuan model dalam mengikuti pola data.
+
+Walaupun secara visual terdapat kecenderungan peningkatan harga emas, proses seleksi model ETS berdasarkan kriteria informasi (AIC/AICc/BIC) memilih ETS(M,N,N) sebagai model yang paling optimal untuk data training. Oleh karena itu komponen trend tidak dimasukkan ke dalam model akhir.
+
+```{r}
+ets_MNN <- ets(train)
+
+fc_MNN <- forecast(
+  ets_MNN,
+  h = length(test)
+)
+
+acc_MNN <- forecast::accuracy(
+  fc_MNN,
+  test
+)
+```
+
+
+### ETS(A,A,N)
+```{r}
+ets_AAN <- ets(
+  train,
+  model = "AAN"
+)
+
+fc_AAN <- forecast(
+  ets_AAN,
+  h = length(test)
+)
+
+acc_AAN <- forecast::accuracy(
+  fc_AAN,
+  test
+)
+```
+
+
+### ETS(A,Ad,N)
+```{r}
+ets_AAdN <- ets(
+  train,
+  model = "AAN",
+  damped = TRUE
+)
+
+fc_AAdN <- forecast(
+  ets_AAdN,
+  h = length(test)
+)
+
+acc_AAdN <- forecast::accuracy(
+  fc_AAdN,
+  test
+)
+```
+
+
+```{r}
+
+ets_comparison <- data.frame(
+  Model = c(
+    "ETS(M,N,N)",
+    "ETS(A,A,N)",
+    "ETS(A,Ad,N)"
+  ),
+  RMSE = c(
+    acc_MNN["Test set","RMSE"],
+    acc_AAN["Test set","RMSE"],
+    acc_AAdN["Test set","RMSE"]
+  ),
+  MAE = c(
+    acc_MNN["Test set","MAE"],
+    acc_AAN["Test set","MAE"],
+    acc_AAdN["Test set","MAE"]
+  ),
+  MAPE = c(
+    acc_MNN["Test set","MAPE"],
+    acc_AAN["Test set","MAPE"],
+    acc_AAdN["Test set","MAPE"]
+  )
+)
+
+ets_comparison
+```
+
+```{r}
+summary(ets_AAN)
+```
+
+
+Berdasarkan hasil pengujian, ETS(A,A,N) dengan alpha = 0.9606 dan beta  = 0.0028 menghasilkan nilai MAPE terkecil sebesar 10.60%, sehingga dipilih sebagai model ETS terbaik. Hasil ini menunjukkan bahwa data harga emas memiliki komponen tren yang cukup kuat sehingga model yang mengakomodasi tren mampu menghasilkan prediksi yang lebih akurat.
+
+Selanjutnya, akan dilakukan pengujian ETS(A,A,N) dengan parameter alpha dan beta yang berbeda
+
+## model ANN 1
+
+```{r}
+ets_tune1 <- ets(
+  train,
+  model = "AAN",
+  alpha = 0.95,
+  beta = 0.003
+)
+
+fc_tune1 <- forecast(
+  ets_tune1,
+  h = length(test)
+)
+
+acc_tune1 <- forecast::accuracy(
+  fc_tune1,
+  test
+)
+```
+
+
+## model ANN 2
+
+```{r}
+ets_tune2 <- ets(
+  train,
+  model = "AAN",
+  alpha = 0.9,
+  beta = 0.005
+)
+
+fc_tune2 <- forecast(
+  ets_tune2,
+  h = length(test)
+)
+
+acc_tune2 <- forecast::accuracy(
+  fc_tune2,
+  test
+)
+```
+
+
+## model ANN 3
+
+```{r}
+ets_tune3 <- ets(
+  train,
+  model = "AAN",
+  alpha = 0.9,
+  beta = 0.007
+)
+
+fc_tune3 <- forecast(
+  ets_tune3,
+  h = length(test)
+)
+
+acc_tune3 <- forecast::accuracy(
+  fc_tune3,
+  test
+)
+```
+
+
+## model ANN 4
+
+```{r}
+ets_tune4 <- ets(
+  train,
+  model = "AAN",
+  alpha = 0.85,
+  beta = 0.006
+)
+
+fc_tune4 <- forecast(
+  ets_tune4,
+  h = length(test)
+)
+
+acc_tune4 <- forecast::accuracy(
+  fc_tune4,
+  test
+)
+```
+
+## model 5
+
+```{r}
+ets_tune5 <- ets(
+  train,
+  model = "AAN",
+  alpha = 0.5,
+  beta = 0.01
+)
+
+fc_tune5 <- forecast(
+  ets_tune5,
+  h = length(test)
+)
+
+acc_tune5 <- forecast::accuracy(
+  fc_tune5,
+  test
+)
+```
+
+
+## model 6
+
+```{r}
+ets_tune6 <- ets(
+  train,
+  model = "AAN",
+  alpha = 0.47,
+  beta = 0.01
+)
+
+fc_tune6 <- forecast(
+  ets_tune6,
+  h = length(test)
+)
+
+acc_tune6 <- forecast::accuracy(
+  fc_tune6,
+  test
+)
+```
+
+
+```{r}
+ets_tuning <- data.frame(
+  Model = c(
+    "a = 0.9606 b = 0.0028",
+    "a=0.95 b=0.003",
+    "a=0.9 b=0.005",
+    "a=0.9 b=0.007",
+    "a=0.85 b=0.006",
+    "a=0.5 b=0.01",
+    "a=0.47 b=0.01"
+  ),
+  RMSE = c(
+    acc_AAN["Test set","RMSE"],
+    acc_tune1["Test set","RMSE"],
+    acc_tune2["Test set","RMSE"],
+    acc_tune3["Test set","RMSE"],
+    acc_tune4["Test set","RMSE"],
+    acc_tune5["Test set","RMSE"],
+    acc_tune6["Test set","RMSE"]
+  ),
+  MAE = c(
+    acc_AAN["Test set","MAE"],
+    acc_tune1["Test set","MAE"],
+    acc_tune2["Test set","MAE"],
+    acc_tune3["Test set","MAE"],
+    acc_tune4["Test set","MAE"],
+    acc_tune5["Test set","MAE"],
+    acc_tune6["Test set","MAE"]
+  ),
+  MAPE = c(
+    acc_AAN["Test set","MAPE"],
+    acc_tune1["Test set","MAPE"],
+    acc_tune2["Test set","MAPE"],
+    acc_tune3["Test set","MAPE"],
+    acc_tune4["Test set","MAPE"],
+    acc_tune5["Test set","MAPE"],
+    acc_tune6["Test set","MAPE"]
+  )
+)
+
+ets_tuning
+```
+
+Berdasarkan hasil pengujian, ETS(A,A,N) dengan parameter alpha = 0.47 dan beta  = 0.01 merupakan model ETS(A,N,N) terbaik diantara model ETS(A,N,N) lainnya dengan nilai MAPE sebesar 6.26%. 
+
+## model ETS terbaik
+```{r}
+ets_final <- ets(
+  train,
+  model = "AAN",
+  alpha = 0.47,
+  beta = 0.01
+)
+
+fc_final <- forecast(
+  ets_final,
+  h = length(test)
+)
+```
+
+## Visualisasi model ETS(A,N,N) dengan alpha = 0.47 dan beta = 0.01
+
+```{r}
+plot_data <- data.frame(
+  Index = 1:length(test),
+  Actual = as.numeric(test),
+  Forecast = as.numeric(fc_final$mean)
+)
+
+ggplot(plot_data,
+       aes(x = Index)) +
+
+  geom_line(
+    aes(y = Actual,
+        color = "Actual"),
+    linewidth = 1
+  ) +
+
+  geom_line(
+    aes(y = Forecast,
+        color = "Forecast"),
+    linewidth = 1
+  ) +
+
+  labs(
+    title = "ETS(A,A,N) Terbaik: Actual vs Forecast",
+    x = "Periode Testing",
+    y = "Harga Emas"
+  ) +
+
+  theme_minimal()
+```
+
+
+```{r}
+actual_data <- data.frame(
+  Index = 1:length(price_ts),
+  Actual = as.numeric(price_ts)
+)
+
+fitted_data <- data.frame(
+  Index = 1:length(train),
+  Fitted = as.numeric(fitted(ets_final))
+)
+
+forecast_data <- data.frame(
+  Index = (length(train)+1):length(price_ts),
+  Forecast = as.numeric(fc_final$mean)
+)
+
+ggplot() +
+
+  geom_line(
+    data = actual_data,
+    aes(Index, Actual,
+        color = "Actual"),
+    linewidth = 1
+  ) +
+
+  geom_line(
+    data = fitted_data,
+    aes(Index, Fitted,
+        color = "Fitted"),
+    linewidth = 0.5
+  ) +
+
+  geom_line(
+    data = forecast_data,
+    aes(Index, Forecast,
+        color = "Forecast"),
+    linewidth = 1
+  ) +
+
+  geom_vline(
+    xintercept = length(train),
+    linetype = "dashed",
+    color = "red"
+  ) +
+
+  labs(
+    title = "ETS(A,A,N): Actual, Fitted, dan Forecast",
+    subtitle = "Garis merah menunjukkan batas data training dan testing",
+    x = "Periode",
+    y = "Harga Emas"
+  ) +
+
+  theme_minimal() +
+
+  theme(
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+```
+
+Berdasarkan hasil visualisasi, model ETS(A,A,N) dengan alpha = 0.47 dan beta = 0.01 mampu mengikuti pola pergerakan harga emas dengan cukup baik. Nilai fitted pada data training relatif dekat dengan data aktual, sedangkan hasil forecast pada data testing juga mampu menangkap tren kenaikan harga emas. Hal ini konsisten dengan hasil evaluasi yang menunjukkan nilai MAPE sebesar 6.26%, yang merupakan nilai terbaik dibandingkan model ETS lainnya.
+
+
+## forecast 30 hari ke depan
+```{r}
+ets_future <- ets(
+  price_ts,
+  model = "AAN",
+  alpha = 0.47,
+  beta = 0.01
+)
+
+future_forecast <- forecast(
+  ets_future,
+  h = 30
+)
+```
+
+
+```{r}
+autoplot(future_forecast) +
+  labs(
+    title = "Forecast Harga Emas 30 Hari ke Depan Menggunakan ETS(A,A,N)",
+    x = "Periode",
+    y = "Harga Emas"
+  )
+```
+
+```{r}
+as.data.frame(future_forecast)
+```
+
+# 8. Model ARIMA
+
+### Identifikasi ACF dan PACF
+```{r}
+acf(diff(price_ts),
+    main = "ACF")
+
+pacf(diff(price_ts),
+     main = "PACF")
+```
+Berdasarkan plot ACF dan PACF setelah differencing pertama, sebagian besar nilai autokorelasi berada di dalam batas kepercayaan sehingga tidak terlihat pola AR maupun MA yang dominan. Oleh karena itu kandidat model yang dipertimbangkan adalah ARIMA(0,1,0), ARIMA(1,1,0), ARIMA(0,1,1), dan ARIMA(1,1,1).
+
+### ARIMA (0,1,0)
+
+model
+```{r}
+model_010 <- Arima(
+  train,
+  order = c(0,1,0)
+)
+
+summary(model_010)
+```
+forecast
+```{r}
+fc_010 <- forecast(
+  model_010,
+  h = length(test)
+)
+```
+
+evaluasi
+```{r}
+arima_010 <- forecast::accuracy(
+  fc_010,
+  test
+)
+```
+
+### ARIMA (1,1,0)
+
+model
+```{r}
+model_110 <- Arima(
+  train,
+  order = c(1,1,0)
+)
+
+summary(model_110)
+```
+forecast
+```{r}
+fc_110 <- forecast(
+  model_110,
+  h = length(test)
+)
+```
+
+evaluasi
+```{r}
+arima_110 <- forecast::accuracy(
+  fc_110,
+  test
+)
+```
+
+### ARIMA (0,1,1)
+
+model
+```{r}
+model_011 <- Arima(
+  train,
+  order = c(0,1,1)
+)
+
+summary(model_011)
+```
+forecast
+```{r}
+fc_011 <- forecast(
+  model_011,
+  h = length(test)
+)
+```
+
+evaluasi
+```{r}
+arima_011 <- forecast::accuracy(
+  fc_011,
+  test
+)
+```
+
+### ARIMA (1,1,1)
+
+model
+```{r}
+model_111 <- Arima(
+  train,
+  order = c(1,1,1)
+)
+
+summary(model_111)
+```
+forecast
+```{r}
+fc_111 <- forecast(
+  model_111,
+  h = length(test)
+)
+```
+
+evaluasi
+```{r}
+arima_111 <- forecast::accuracy(
+  fc_111,
+  test
+)
+```
+
+### function auto arima
+```{r}
+model_220 <- auto.arima(train)
+
+summary(model_220)
+```
+forecast
+```{r}
+fc_220 <- forecast(
+  model_220,
+  h = length(test)
+)
+```
+
+evaluasi
+```{r}
+arima_220 <- forecast::accuracy(
+  fc_220,
+  test
+)
+```
+
+
+### perbandingan arima
+```{r}
+comparison_arima <- data.frame(
+  Model = c(
+    "ARIMA(0,1,0)",
+    "ARIMA(1,1,0)",
+    "ARIMA(0,1,1)",
+    "ARIMA(1,1,1)",
+    "ARIMA(2,2,0)"
+  ),
+  RMSE = c(
+    arima_010["Test set","RMSE"],
+    arima_110["Test set","RMSE"],
+    arima_011["Test set","RMSE"],
+    arima_111["Test set","RMSE"],
+    arima_220["Test set","RMSE"]
+  ),
+  MAE = c(
+    arima_010["Test set","MAE"],
+    arima_110["Test set","MAE"],
+    arima_011["Test set","MAE"],
+    arima_111["Test set","MAE"],
+    arima_220["Test set","MAE"]
+  ),
+  MAPE = c(
+    arima_010["Test set","MAPE"],
+    arima_110["Test set","MAPE"],
+    arima_011["Test set","MAPE"],
+    arima_111["Test set","MAPE"],
+    arima_220["Test set","MAPE"]
+  )
+)
+
+comparison_arima
+```
+Berdasarkan hasil pengujian dari beberapa model ARIMA, model terbaik diperoleh pada ARIMA(0,1,1) dengan nilai MAPE sebesar 16.32%. Namun, performa tersebut masih lebih rendah dibandingkan model ETS(A,A,N) yang menghasilkan MAPE sebesar 10.60%. Hal ini menunjukkan bahwa Exponential Smoothing dengan komponen trend bisa memodelkan data harga emas dengan lebih baik dibandingkan pendekatan ARIMA. 
+
+Selanjutnya akan dilakukan uji signifikansi dan diagnostik residual
+
+
+## uji signifikansi
+
+```{r}
+get_coef_table <- function(model, model_name){
+
+  ct <- coeftest(model)
+
+  data.frame(
+    Model = model_name,
+    Parameter = rownames(ct),
+    Estimate = round(ct[,1],4),
+    p_value = round(ct[,4],4),
+    Signifikansi = ifelse(
+      ct[,4] < 0.05,
+      "Signifikan",
+      "Tidak Signifikan"
+    )
+  )
+}
+```
+
+```{r}
+coef_table <- bind_rows(
+
+  get_coef_table(
+    model_110,
+    "ARIMA(1,1,0)"
+  ),
+
+  get_coef_table(
+    model_011,
+    "ARIMA(0,1,1)"
+  ),
+
+  get_coef_table(
+    model_111,
+    "ARIMA(1,1,1)"
+  ),
+
+  get_coef_table(
+    model_220,
+    "ARIMA(2,2,0)"
+  )
+
+)
+
+rownames(coef_table) <- NULL
+
+coef_table
+```
+H0 : βi = 0 (parameter tidak signifikan dalam model)
+H1 : βi != 0 (parameter signifikan dalam model)
+
+Hasil pengujian menunjukkan bahwa parameter pada model ARIMA(1,1,0), ARIMA(0,1,1), dan ARIMA(1,1,1) memiliki p-value lebih besar dari 0.05 sehingga tidak signifikan pada taraf signifikansi 5%. Sementara itu, model ARIMA(2,2,0) memiliki seluruh parameter yang signifikan dengan p-value kurang dari 0.05. Hal ini menunjukkan bahwa hanya model ARIMA(2,2,0) yang memiliki parameter yang secara statistik berpengaruh dalam model.
+
+
+## uji normalitas residual
+```{r}
+normality_table <- data.frame(
+  Model = c(
+    "ARIMA(0,1,0)",
+    "ARIMA(1,1,0)",
+    "ARIMA(0,1,1)",
+    "ARIMA(1,1,1)",
+    "ARIMA(2,2,0)"
+  ),
+  P_Value = c(
+    lillie.test(residuals(model_010))$p.value,
+    lillie.test(residuals(model_110))$p.value,
+    lillie.test(residuals(model_011))$p.value,
+    lillie.test(residuals(model_111))$p.value,
+    lillie.test(residuals(model_220))$p.value
+  )
+)
+
+normality_table$Keputusan <- ifelse(
+  normality_table$P_Value > 0.05,
+  "Memenuhi Asumsi Normalitas",
+  "Tidak Memenuhi Asumsi Normalitas"
+)
+
+normality_table
+```
+H0 : Residual berdistribusi normal
+H1 : Residual tidak berdistribusi normal
+
+Hasil pengujian menunjukkan bahwa seluruh model ARIMA memiliki p-value kurang dari 0.05 sehingga hipotesis nol ditolak. Artinya, residual dari seluruh model ARIMA tidak berdistribusi normal dan tidak memenuhi asumsi normalitas residual.
+
+## uji white noise residual 
+
+```{r}
+whitenoise_table <- data.frame(
+  Model = c(
+    "ARIMA(0,1,0)",
+    "ARIMA(1,1,0)",
+    "ARIMA(0,1,1)",
+    "ARIMA(1,1,1)",
+    "ARIMA(2,2,0)"
+  ),
+  P_Value = c(
+    Box.test(residuals(model_010),
+             lag = 20,
+             type = "Ljung-Box")$p.value,
+
+    Box.test(residuals(model_110),
+             lag = 20,
+             type = "Ljung-Box")$p.value,
+
+    Box.test(residuals(model_011),
+             lag = 20,
+             type = "Ljung-Box")$p.value,
+
+    Box.test(residuals(model_111),
+             lag = 20,
+             type = "Ljung-Box")$p.value,
+
+    Box.test(residuals(model_220),
+             lag = 20,
+             type = "Ljung-Box")$p.value
+  )
+)
+
+whitenoise_table$Keputusan <- ifelse(
+  whitenoise_table$P_Value > 0.05,
+  "Memenuhi Asumsi White Noise",
+  "Tidak Memenuhi Asumsi White Noise"
+)
+
+whitenoise_table
+```
+H0 : Residual merupakan white noise (tidak terdapat autokorelasi residual)
+H1 : Residual bukan white noise (masih terdapat autokorelasi residual)
+
+Hasil pengujian menunjukkan bahwa model ARIMA(0,1,0), ARIMA(1,1,0), ARIMA(0,1,1), dan ARIMA(1,1,1) memiliki p-value lebih besar dari 0.05 sehingga memenuhi asumsi white noise. Namun, model ARIMA(2,2,0) memiliki p-value kurang dari 0.05 sehingga tidak memenuhi asumsi white noise. Hal ini menunjukkan bahwa residual pada model ARIMA(2,2,0) masih mengandung pola yang belum dapat dijelaskan oleh model.
+
+
+## kesimpulan 
+Berdasarkan uji signifikansi parameter, hanya ARIMA(2,2,0) yang memiliki parameter signifikan. Namun model tersebut tidak memenuhi asumsi white noise. Di sisi lain, model ARIMA(0,1,0), ARIMA(1,1,0), ARIMA(0,1,1), dan ARIMA(1,1,1) memenuhi asumsi white noise tetapi memiliki parameter yang tidak signifikan. Selain itu, seluruh model ARIMA tidak memenuhi asumsi normalitas residual. Oleh karena itu, tidak ada model ARIMA yang dipilih sebagai model akhir dalam penelitian ini.
+
+# 9. XGBoost
+
+## Buat lag features
+```{r}
+df_ml <- data.frame(
+  Price = as.numeric(price_ts)
+)
+
+df_ml <- df_ml %>%
+  mutate(
+    lag1 = lag(Price, 1),
+    lag2 = lag(Price, 2),
+    lag3 = lag(Price, 3),
+    lag7 = lag(Price, 7),
+    lag14 = lag(Price, 14)
+  ) %>%
+  na.omit()
+```
+
+```{r}
+dim(df_ml)
+
+head(df_ml)
+
+tail(df_ml)
+```
+
+
+## Train test split
+```{r}
+n <- nrow(df_ml)
+
+train_size <- floor(0.8 * n)
+
+train_ml <- df_ml[1:train_size, ]
+test_ml <- df_ml[(train_size+1):n, ]
+```
+
+## Buat X dan Y
+```{r}
+x_train <- as.matrix(
+  train_ml[, c("lag1","lag2","lag3","lag7","lag14")]
+)
+
+y_train <- train_ml$Price
+
+x_test <- as.matrix(
+  test_ml[, c("lag1","lag2","lag3","lag7","lag14")]
+)
+
+y_test <- test_ml$Price
+```
+
+## Train XGBoost dengan berbagai parameter
+```{r}
+results_xgb <- data.frame()
+
+params <- expand.grid(
+  max_depth = c(2,3,4,5),
+  nrounds = c(100,200,300)
+)
+```
+
+```{r}
+for(i in 1:nrow(params)){
+
+  model <- xgboost(
+    x = x_train,
+    y = y_train,
+    objective = "reg:squarederror",
+    max_depth = params$max_depth[i],
+    nrounds = params$nrounds[i],
+    learning_rate = 0.05,
+    eval_metric = "rmse"
+  )
+
+  pred <- predict(
+    model,
+    x_test
+  )
+
+  rmse <- sqrt(
+    mean((y_test - pred)^2)
+  )
+
+  mae <- mean(
+    abs(y_test - pred)
+  )
+
+  mape <- mean(
+    abs((y_test - pred)/y_test)
+  ) * 100
+
+  results_xgb <- rbind(
+    results_xgb,
+    data.frame(
+      max_depth = params$max_depth[i],
+      nrounds = params$nrounds[i],
+      RMSE = rmse,
+      MAE = mae,
+      MAPE = mape
+    )
+  )
+}
+```
+
+
+## perbandingan model XGBoost
+
+```{r}
+results_xgb <- results_xgb[
+  order(results_xgb$MAPE),
+]
+
+results_xgb
+```
+Berdasarkan eksperimen berbagai kombinasi parameter max_depth dan nrounds, model terbaik diperoleh pada max_depth = 3 dan nrounds = 300 dengan nilai MAPE sebesar 17.19%. Namun perbedaan performa antar kombinasi parameter relatif kecil, yaitu hanya berkisar antara 17.19% hingga 17.60%. Hal ini menunjukkan bahwa perubahan hyperparameter belum mampu meningkatkan akurasi model secara signifikan. Keterbatasan performa XGBoost ini diduga lebih disebabkan oleh karakteristik data yang hanya menggunakan satu variabel deret waktu tanpa variabel penjelas tambahan. 
+
+Karena itu, selanjutnya akan dilakukan pengujian beberapa kombinasi lag features untuk memperoleh struktur input yang paling optimal bagi model XGBoost.
+
+## buat lag features (ditambahkan lag 30)
+```{r}
+df_ml <- data.frame(
+  Price = as.numeric(price_ts)
+)
+
+df_ml <- df_ml %>%
+  mutate(
+    lag1 = lag(Price, 1),
+    lag2 = lag(Price, 2),
+    lag3 = lag(Price, 3),
+    lag7 = lag(Price, 7),
+    lag14 = lag(Price, 14),
+    lag30 = lag(Price, 30)
+  ) %>%
+  na.omit()
+```
+
+```{r}
+n <- nrow(df_ml)
+
+train_size <- floor(0.8 * n)
+
+train_ml <- df_ml[1:train_size, ]
+test_ml <- df_ml[(train_size+1):n, ]
+```
+
+```{r}
+y_train <- train_ml$Price
+
+y_test <- test_ml$Price
+```
+
+## buat model lag
+
+### Model lag A (pakai lag pendek)
+```{r}
+x_train_A <- as.matrix(
+  train_ml[, c(
+    "lag1",
+    "lag2",
+    "lag3"
+  )]
+)
+
+x_test_A <- as.matrix(
+  test_ml[, c(
+    "lag1",
+    "lag2",
+    "lag3"
+  )]
+)
+```
+
+#### train
+```{r}
+xgb_A <- xgboost(
+  x = x_train_A,
+  y = y_train,
+  max_depth = 3,
+  nrounds = 300,
+  learning_rate = 0.05,
+  objective = "reg:squarederror",
+  verbose = 0
+)
+
+pred_A <- predict(
+  xgb_A,
+  x_test_A
+)
+```
+
+#### Evaluasi Model A
+```{r}
+pred_A <- predict(xgb_A, x_test_A)
+
+rmse_A <- sqrt(mean((y_test - pred_A)^2))
+mae_A <- mean(abs(y_test - pred_A))
+mape_A <- mean(abs((y_test - pred_A)/y_test))*100
+```
+
+
+
+### Model lag B (lag campuran)
+```{r}
+x_train_B <- as.matrix(
+  train_ml[, c(
+    "lag1",
+    "lag2",
+    "lag3",
+    "lag7",
+    "lag14"
+  )]
+)
+
+x_test_B <- as.matrix(
+  test_ml[, c(
+    "lag1",
+    "lag2",
+    "lag3",
+    "lag7",
+    "lag14"
+  )]
+)
+```
+
+#### train
+```{r}
+xgb_B <- xgboost(
+  x = x_train_B,
+  y = y_train,
+  max_depth = 3,
+  nrounds = 300,
+  learning_rate = 0.05,
+  objective = "reg:squarederror",
+  verbose = 0
+)
+
+pred_B <- predict(
+  xgb_B,
+  x_test_B
+)
+```
+
+#### Evaluasi model B
+```{r}
+rmse_B <- sqrt(mean((y_test - pred_B)^2))
+mae_B <- mean(abs(y_test - pred_B))
+mape_B <- mean(abs((y_test - pred_B)/y_test))*100
+```
+
+
+### Model lag C (panjang)
+```{r}
+x_train_C <- as.matrix(
+  train_ml[, c(
+    "lag1",
+    "lag2",
+    "lag3",
+    "lag7",
+    "lag14",
+    "lag30"
+  )]
+)
+
+x_test_C <- as.matrix(
+  test_ml[, c(
+    "lag1",
+    "lag2",
+    "lag3",
+    "lag7",
+    "lag14",
+    "lag30"
+  )]
+)
+```
+
+#### train
+```{r}
+xgb_C <- xgboost(
+  x = x_train_C,
+  y = y_train,
+  max_depth = 3,
+  nrounds = 300,
+  learning_rate = 0.05,
+  objective = "reg:squarederror",
+  verbose = 0
+)
+
+pred_C <- predict(
+  xgb_C,
+  x_test_C
+)
+```
+
+#### Evaluasi model C
+```{r}
+rmse_C <- sqrt(mean((y_test - pred_C)^2))
+
+mae_C <- mean(abs(y_test - pred_C))
+
+mape_C <- mean(
+  abs((y_test - pred_C)/y_test)
+) * 100
+```
+
+
+```{r}
+calc_metrics <- function(actual, pred){
+
+  rmse <- sqrt(
+    mean((actual-pred)^2)
+  )
+
+  mae <- mean(
+    abs(actual-pred)
+  )
+
+  mape <- mean(
+    abs((actual-pred)/actual)
+  )*100
+
+  return(c(rmse, mae, mape))
+}
+```
+
+```{r}
+result_lag <- data.frame(
+  Model = c(
+    "Lag 1,2,3",
+    "Lag 1,2,3,7,14",
+    "Lag 1,2,3,7,14,30"
+  ),
+  RMSE = c(
+    rmse_A,
+    rmse_B,
+    rmse_C
+  ),
+  MAE = c(
+    mae_A,
+    mae_B,
+    mae_C
+  ),
+  MAPE = c(
+    mape_A,
+    mape_B,
+    mape_C
+  )
+)
+
+result_lag
+```
+Berdasarkan eksperimen beberapa kombinasi lag feature, diperoleh bahwa semakin banyak informasi historis yang digunakan, performa model XGBoost cenderung meningkat. Model dengan lag 1, 2, dan 3 menghasilkan MAPE sebesar 17.27%, sedangkan penambahan lag 7 dan 14 menurunkan MAPE menjadi 16.62%. Performa terbaik diperoleh pada kombinasi lag 1, 2, 3, 7, 14, dan 30 dengan MAPE sebesar 16.43%.
+
+# 10. NNAR
+
+```{r}
+nnar_model <- nnetar(train)
+
+nnar_model
+```
+
+model default NNAR yang terbentuk adalah NNAR(1,1)
+
+```{r}
+fc_nnar <- forecast(
+  nnar_model,
+  h = length(test)
+)
+
+acc_nnar <- forecast::accuracy(
+  fc_nnar,
+  test
+)
+```
+
+
+## model NNAR(3,5)
+```{r}
+nnar_35 <- nnetar(
+  train,
+  p = 3,
+  size = 5
+)
+
+fc_35 <- forecast(
+  nnar_35,
+  h = length(test)
+)
+
+acc_35 <- forecast::accuracy(
+  fc_35,
+  test
+)
+```
+
+## model NNAR(5,10)
+```{r}
+nnar_510 <- nnetar(
+  train,
+  p = 5,
+  size = 10
+)
+
+fc_510 <- forecast(
+  nnar_510,
+  h = length(test)
+)
+
+acc_510 <- forecast::accuracy(
+  fc_510,
+  test
+)
+```
+
+## model NNAR(10,10)
+```{r}
+nnar_1010 <- nnetar(
+  train,
+  p = 10,
+  size = 10
+)
+
+fc_1010 <- forecast(
+  nnar_1010,
+  h = length(test)
+)
+
+acc_1010 <- forecast::accuracy(
+  fc_1010,
+  test
+)
+```
+
+## model NNAR(15,15)
+```{r}
+nnar_1515 <- nnetar(
+  train,
+  p = 15,
+  size = 15
+)
+
+fc_1515 <- forecast(
+  nnar_1515,
+  h = length(test)
+)
+
+acc_1515 <- forecast::accuracy(
+  fc_1515,
+  test
+)
+```
+
+## model NNAR(20,20)
+```{r}
+nnar_2020 <- nnetar(
+  train,
+  p = 20,
+  size = 20
+)
+
+fc_2020 <- forecast(
+  nnar_2020,
+  h = length(test)
+)
+
+acc_2020 <- forecast::accuracy(
+  fc_2020,
+  test
+)
+```
+
+```{r}
+comparison_nnar <- data.frame(
+  Model = c(
+    "NNAR(1,1)",
+    "NNAR(3,5)",
+    "NNAR(5,10)",
+    "NNAR(10,10)",
+    "NNAR(15,15)",
+    "NNAR(20,20)"
+  ),
+  MAPE = c(
+    acc_nnar["Test set","MAPE"],
+    acc_35["Test set","MAPE"],
+    acc_510["Test set","MAPE"],
+    acc_1010["Test set","MAPE"],
+    acc_1515["Test set", "MAPE"],
+    acc_2020["Test set","MAPE"]
+  )
+)
+
+comparison_nnar
+```
+
+# 11. Kesimpulan
+Berdasarkan seluruh eksperimen yang dilakukan menggunakan metode ETS, ARIMA, XGBoost, dan Neural Network Auto Regression (NNAR), model terbaik diperoleh pada ETS(A,A,N) hasil tuning parameter dengan nilai MAPE sebesar 6.26%. Hasil tersebut menunjukkan bahwa pola harga emas pada dataset ini lebih dominan dipengaruhi oleh komponen trend dibandingkan pola autoregressive atau hubungan nonlinier yang kompleks. Oleh karena itu, metode Exponential Smoothing dengan komponen trend aditif merupakan pendekatan yang paling sesuai untuk memodelkan dan memprediksi harga emas pada penelitian ini.
+
+
