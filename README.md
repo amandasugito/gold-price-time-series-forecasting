@@ -167,8 +167,8 @@ The filenames above are recommended names for organizing the repository. Rename 
 The analysis requires the CSV dataset and the R packages used in the notebook.
 
 ## 👩‍💻 Author
-**Amanda Sugito**
-**Vanessa Santoso**
+- **Amanda Sugito**
+- **Vanessa Santoso**
 
 Human Computer Interaction academic project at BINUS University.
 
