@@ -168,12 +168,9 @@ The analysis requires the CSV dataset and the R packages used in the notebook.
 
 ## 👩‍💻 Author
 **Amanda Sugito**
+**Vanessa Santoso**
 
 Human Computer Interaction academic project at BINUS University.
-
-## 🔗 Connect with Me
-- LinkedIn: Amanda Sugito | www.linkedin.com/in/amanda-sugito
-- GitHub: amandasugito | https://github.com/amandasugito
 
 
 ## ⚠️ Limitations
